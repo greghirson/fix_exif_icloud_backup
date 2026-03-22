@@ -117,16 +117,21 @@ dry_run = sys.argv[3].lower() == "true"
 image_exts = {"jpg", "jpeg", "png", "heic", "gif"}
 video_exts = {"mov", "mp4", "m4v"}
 
+REQUIRED_COLUMNS = {"imgName", "originalCreationDate"}
+
 def parse_apple_date(s: str):
     s = (s or "").strip()
     if not s:
         return None
     try:
         dt = datetime.strptime(s, "%A %B %d,%Y %I:%M %p GMT")
-        dt = dt.replace(tzinfo=timezone.utc).astimezone()
+        dt = dt.replace(tzinfo=timezone.utc)
         return dt
     except ValueError:
         return None
+
+def warn(msg: str):
+    print(msg, file=sys.stderr)
 
 def run(cmd):
     return subprocess.run(cmd, check=True, text=True, capture_output=True)
@@ -141,6 +146,16 @@ errors = 0
 with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
     reader = csv.DictReader(f)
 
+    if not reader.fieldnames:
+        warn("Error: CSV file is empty or has no header row.")
+        sys.exit(1)
+
+    missing_cols = REQUIRED_COLUMNS - set(reader.fieldnames)
+    if missing_cols:
+        warn(f"Error: CSV is missing required columns: {', '.join(sorted(missing_cols))}")
+        warn(f"  Found columns: {', '.join(reader.fieldnames)}")
+        sys.exit(1)
+
     for row in reader:
         name = (row.get("imgName") or "").strip()
         created = (row.get("originalCreationDate") or "").strip()
@@ -151,20 +166,20 @@ with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
         file_path = os.path.join(target_dir, name)
 
         if not os.path.isfile(file_path):
-            print(f"⚠️  Missing file: {file_path}")
+            warn(f"⚠️  Missing file: {file_path}")
             missing += 1
             continue
 
         dt = parse_apple_date(created)
         if not dt:
-            print(f"⚠️  Could not parse date for: {name} | raw={created!r}")
+            warn(f"⚠️  Could not parse date for: {name} | raw={created!r}")
             bad_dates += 1
             continue
 
         exif_date = dt.strftime("%Y:%m:%d %H:%M:%S")
         parsed += 1
 
-        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        ext = os.path.splitext(name)[1].lstrip(".").lower()
 
         if ext in image_exts:
             cmd = [
@@ -173,6 +188,9 @@ with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
                 f"-DateTimeOriginal={exif_date}",
                 f"-CreateDate={exif_date}",
                 f"-ModifyDate={exif_date}",
+                "-OffsetTimeOriginal=+00:00",
+                "-OffsetTime=+00:00",
+                "-OffsetTimeDigitized=+00:00",
                 file_path,
             ]
         elif ext in video_exts:
@@ -188,7 +206,7 @@ with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
                 file_path,
             ]
         else:
-            print(f"⚠️  Unsupported type: {file_path}")
+            warn(f"⚠️  Unsupported type: {file_path}")
             unsupported += 1
             continue
 
@@ -205,20 +223,20 @@ with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
                 print(result.stdout.strip())
             updated += 1
         except subprocess.CalledProcessError as e:
-            print(f"⚠️  exiftool failed for {file_path}")
+            warn(f"⚠️  exiftool failed for {file_path}")
             if e.stdout:
-                print(e.stdout.strip())
+                warn(e.stdout.strip())
             if e.stderr:
-                print(e.stderr.strip())
+                warn(e.stderr.strip())
             errors += 1
         except Exception as e:
-            print(f"⚠️  Failed updating filesystem time for {file_path}: {e}")
+            warn(f"⚠️  Failed updating filesystem time for {file_path}: {e}")
             errors += 1
 
 print("")
 print("Summary")
 print(f"  parsed dates:      {parsed}")
-print(f"  updated files:     {updated if not dry_run else 0}")
+print(f"  updated files:     {updated}")
 print(f"  missing files:     {missing}")
 print(f"  bad dates:         {bad_dates}")
 print(f"  unsupported types: {unsupported}")
