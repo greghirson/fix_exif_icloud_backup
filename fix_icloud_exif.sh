@@ -4,20 +4,20 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  fix_icloud_exif.sh -d <directory> -R <true|false>
+  fix_icloud_exif.sh -d <directory> [-n]
 
 Required flags:
   -d   Directory containing the exported iCloud files and CSV metadata files
-  -R   Dry-run mode: true or false
+
+Options:
+  -n   Dry-run mode: preview changes without modifying files
 
 Examples:
-  fix_icloud_exif.sh -d "/path/to/Photos" -R true
-  fix_icloud_exif.sh -d "/path/to/Photos" -R false
+  fix_icloud_exif.sh -d "/path/to/Photos" -n
+  fix_icloud_exif.sh -d "/path/to/Photos"
 
 Notes:
-  - Both flags are required.
-  - This is intentional so a real write cannot happen accidentally.
-  - The script updates files in place.
+  - The script updates files in place when run without -n.
   - All CSV files in the directory are automatically merged as the metadata source.
 EOF
 }
@@ -30,12 +30,12 @@ if [[ $# -eq 0 ]]; then
 fi
 
 TARGET_DIR=""
-DRY_RUN=""
+DRY_RUN=false
 
-while getopts ":d:R:h" opt; do
+while getopts ":d:nh" opt; do
   case "$opt" in
     d) TARGET_DIR="$OPTARG" ;;
-    R) DRY_RUN="$OPTARG" ;;
+    n) DRY_RUN=true ;;
     h)
       usage
       exit 0
@@ -57,24 +57,12 @@ done
 
 shift $((OPTIND - 1))
 
-if [[ -z "$TARGET_DIR" || -z "$DRY_RUN" ]]; then
-  echo "Error: -d and -R are both required."
+if [[ -z "$TARGET_DIR" ]]; then
+  echo "Error: -d is required."
   echo
   usage
   exit 1
 fi
-
-DRY_RUN_NORMALIZED="$(printf '%s' "$DRY_RUN" | tr '[:upper:]' '[:lower:]')"
-
-case "$DRY_RUN_NORMALIZED" in
-  true|false) ;;
-  *)
-    echo "Error: -R must be either true or false."
-    echo
-    usage
-    exit 1
-    ;;
-esac
 
 if [[ ! -d "$TARGET_DIR" ]]; then
   echo "Error: directory not found: $TARGET_DIR"
@@ -93,9 +81,9 @@ fi
 
 echo "Running with:"
 echo "  TARGET_DIR=$TARGET_DIR"
-echo "  DRY_RUN=$DRY_RUN_NORMALIZED"
+echo "  DRY_RUN=$DRY_RUN"
 
-uv run --with timezonefinder python3 - "$TARGET_DIR" "$DRY_RUN_NORMALIZED" <<'PY'
+uv run --with timezonefinder python3 - "$TARGET_DIR" "$DRY_RUN" <<'PY'
 import csv
 import glob
 import json
@@ -192,9 +180,10 @@ for csv_file in csv_files:
         for row in reader:
             rows.append(row)
 
-print(f"Merged {len(rows)} rows from CSV files.\n")
+total = len(rows)
+print(f"Merged {total} rows from CSV files.\n")
 
-for row in rows:
+for i, row in enumerate(rows, 1):
     name = (row.get("imgName") or "").strip()
     created = (row.get("originalCreationDate") or "").strip()
 
@@ -259,15 +248,17 @@ for row in rows:
         unsupported += 1
         continue
 
+    progress = f"[{i}/{total}]"
+
     if dry_run:
-        print(f"DRYRUN  {file_path} -> {exif_date} {offset_str} ({tz_label})")
+        print(f"{progress} DRYRUN  {file_path} -> {exif_date} {offset_str} ({tz_label})")
         continue
 
     try:
         result = run(cmd)
         ts = local_dt.timestamp()
         os.utime(file_path, (ts, ts))
-        print(f"UPDATED {file_path} -> {exif_date} {offset_str} ({tz_label})")
+        print(f"{progress} UPDATED {file_path} -> {exif_date} {offset_str} ({tz_label})")
         if result.stdout.strip():
             print(result.stdout.strip())
         updated += 1

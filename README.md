@@ -17,7 +17,7 @@ Python dependencies (`timezonefinder`) are managed automatically by `uv` at runt
 ## Usage
 
 ```bash
-fix_icloud_exif.sh -d <directory> -R <true|false>
+fix_icloud_exif.sh -d <directory> [-n]
 ```
 
 ### Flags
@@ -25,22 +25,20 @@ fix_icloud_exif.sh -d <directory> -R <true|false>
 | Flag | Description |
 |------|-------------|
 | `-d` | Directory containing the exported iCloud files and CSV metadata files |
-| `-R` | Dry-run mode: `true` to preview changes, `false` to apply them |
-
-Both flags are required. This is intentional so a real write cannot happen accidentally.
+| `-n` | Dry-run mode: preview changes without modifying files |
 
 ### Examples
 
 Preview what would be changed (dry run):
 
 ```bash
-./fix_icloud_exif.sh -d "/path/to/Photos" -R true
+./fix_icloud_exif.sh -d "/path/to/Photos" -n
 ```
 
 Apply changes:
 
 ```bash
-./fix_icloud_exif.sh -d "/path/to/Photos" -R false
+./fix_icloud_exif.sh -d "/path/to/Photos"
 ```
 
 ## What it does
