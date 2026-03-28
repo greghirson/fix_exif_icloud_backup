@@ -81,8 +81,8 @@ if [[ ! -d "$TARGET_DIR" ]]; then
   exit 1
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "Error: python3 is required."
+if ! command -v uv >/dev/null 2>&1; then
+  echo "Error: uv is required. Install via: curl -LsSf https://astral.sh/uv/install.sh | sh"
   exit 1
 fi
 
@@ -95,13 +95,16 @@ echo "Running with:"
 echo "  TARGET_DIR=$TARGET_DIR"
 echo "  DRY_RUN=$DRY_RUN_NORMALIZED"
 
-python3 - "$TARGET_DIR" "$DRY_RUN_NORMALIZED" <<'PY'
+uv run --with timezonefinder python3 - "$TARGET_DIR" "$DRY_RUN_NORMALIZED" <<'PY'
 import csv
 import glob
+import json
 import os
 import sys
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
+from timezonefinder import TimezoneFinder
 
 target_dir = os.path.abspath(sys.argv[1])
 dry_run = sys.argv[2].lower() == "true"
@@ -122,11 +125,35 @@ def parse_apple_date(s: str):
     except ValueError:
         return None
 
+tf = TimezoneFinder()
+
 def warn(msg: str):
     print(msg, file=sys.stderr)
 
 def run(cmd):
     return subprocess.run(cmd, check=True, text=True, capture_output=True)
+
+def get_timezone_for_file(file_path):
+    """Read GPS coordinates from EXIF and return a ZoneInfo, or None."""
+    try:
+        result = subprocess.run(
+            ["exiftool", "-json", "-GPSLatitude", "-GPSLongitude", "-n", file_path],
+            check=True, text=True, capture_output=True,
+        )
+        data = json.loads(result.stdout)
+        if not data:
+            return None
+        entry = data[0]
+        lat = entry.get("GPSLatitude")
+        lng = entry.get("GPSLongitude")
+        if lat is None or lng is None:
+            return None
+        tz_name = tf.timezone_at(lat=float(lat), lng=float(lng))
+        if tz_name:
+            return ZoneInfo(tz_name)
+    except Exception as e:
+        warn(f"⚠️  Could not determine timezone for {file_path}: {e}")
+    return None
 
 missing = 0
 parsed = 0
@@ -187,10 +214,21 @@ for row in rows:
         bad_dates += 1
         continue
 
-    exif_date = dt.strftime("%Y:%m:%d %H:%M:%S")
     parsed += 1
-
     ext = os.path.splitext(name)[1].lstrip(".").lower()
+
+    tz = get_timezone_for_file(file_path)
+    if tz:
+        local_dt = dt.astimezone(tz)
+        offset = local_dt.strftime("%z")
+        offset_str = f"{offset[:3]}:{offset[3:]}"
+        tz_label = str(tz)
+    else:
+        local_dt = dt
+        offset_str = "+00:00"
+        tz_label = "UTC (no GPS)"
+
+    exif_date = local_dt.strftime("%Y:%m:%d %H:%M:%S")
 
     if ext in image_exts:
         cmd = [
@@ -199,9 +237,9 @@ for row in rows:
             f"-DateTimeOriginal={exif_date}",
             f"-CreateDate={exif_date}",
             f"-ModifyDate={exif_date}",
-            "-OffsetTimeOriginal=+00:00",
-            "-OffsetTime=+00:00",
-            "-OffsetTimeDigitized=+00:00",
+            f"-OffsetTimeOriginal={offset_str}",
+            f"-OffsetTime={offset_str}",
+            f"-OffsetTimeDigitized={offset_str}",
             file_path,
         ]
     elif ext in video_exts:
@@ -222,14 +260,14 @@ for row in rows:
         continue
 
     if dry_run:
-        print(f"DRYRUN  {file_path} -> {exif_date}")
+        print(f"DRYRUN  {file_path} -> {exif_date} {offset_str} ({tz_label})")
         continue
 
     try:
         result = run(cmd)
-        ts = dt.timestamp()
+        ts = local_dt.timestamp()
         os.utime(file_path, (ts, ts))
-        print(f"UPDATED {file_path} -> {exif_date}")
+        print(f"UPDATED {file_path} -> {exif_date} {offset_str} ({tz_label})")
         if result.stdout.strip():
             print(result.stdout.strip())
         updated += 1
